@@ -3,10 +3,10 @@ library(ggplot2)
 library(dplyr) # loads %>% automatically
 library(maps)
 library(sf)
-source("R/load_stop_data.R")
+source("R/clean_stop_data.R")
 
 # data cleaning
-data <- load_stop_data()
+data <- clean_stop_data()
 
 
 filtered <- data %>%

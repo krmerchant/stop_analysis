@@ -1,5 +1,5 @@
 source("R/libraries.R")
-source("R/load_stop_data.R")
+source("R/clean_stop_data.R")
 
 data <- load_stop_data()
 
@@ -30,7 +30,6 @@ p_r_y_arrests_plot <- p_race_given_year_with_arrests |>
   labs(title = "P(ETHNICITY | YEAR ={2023,2024,2025}, ARREST_CHARGES!=NULL, PEDESTRIAN=1)")
 # ggsave( "plots/PEDESTRIAN_stop_per_year.png", plot = p_r_y_arrests_plot);
 p_r_y_arrests_plot
-
 
 
 ped |>
