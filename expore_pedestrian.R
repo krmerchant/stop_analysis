@@ -15,7 +15,7 @@ p_race_given_year <- ped |>
 p_r_y_plot <- p_race_given_year |> ggplot(aes(x = YEAR, y = count, fill = ETHNICITY)) +
   geom_col(position = "dodge") +
   labs(title = "P(ETHNICITY | YEAR ={2023,2024,2025}, STOPPED, PEDESTRIAN=1)")
-# ggsave( "plots/PEDESTRIAN_stop_per_year.png", plot = p_r_y_plot);
+# ggsave( "plots/PEDESTRIAN_stof_per_year.png", plot = p_r_y_plot);
 p_r_y_plot
 
 p_race_given_year_with_arrests <- ped |>
