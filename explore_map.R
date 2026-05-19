@@ -28,6 +28,7 @@ district_stop_counts <- data %>%
   mutate(prop = cts / sum(cts))
 
 dc_police <- st_read("/home/komelmerchant/git/stop_analysis/data/police_districts.geojson")
+
 dc_police <- dc_police |> left_join(district_stop_counts, by = c("POLICEDISTRICT" = "STOP_DISTRICT"))
 dc_police <- dc_police |> left_join(black_stops_by_district, by = c("POLICEDISTRICT" = "STOP_DISTRICT"))
 
