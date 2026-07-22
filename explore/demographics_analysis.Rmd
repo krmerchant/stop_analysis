@@ -1,0 +1,218 @@
+---
+title: "Suspicious Stops and Arrests, Adjusted for Neighborhood Demographics"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+## Load data
+
+```{r load}
+library(dplyr)
+library(ggplot2)
+source("R/clean_stop_data.R")
+source("R/classify_stops.R")
+
+data <- clean_stop_data()
+suspicious <- flag_suspicious_stops(data) %>% classify_outcome()
+```
+
+## Tie each stop to a census tract
+
+`STOP_LOCATION_BLOCK` is a block-level address (e.g. `"6600 BLOCK OF 3RD
+STREET NW..."`), not a lat/lon. The unique blocks behind these suspicious
+stops were geocoded once via the US Census Bureau's free batch geocoder
+(see `R/geocode_utils.R`) and cached to `data/geocoded_blocks.csv`, which
+returns a census tract GEOID directly for each matched address. Not every
+block-level address geocodes cleanly (some are missing a city/zip suffix,
+some are intersections the geocoder can't resolve), so this join drops a
+minority of stops.
+
+```{r join-tract}
+geocoded <- read.csv("data/geocoded_blocks.csv", colClasses = c(GEOID = "character")) %>%
+  select(STOP_LOCATION_BLOCK, GEOID)
+
+suspicious <- suspicious %>% left_join(geocoded, by = "STOP_LOCATION_BLOCK")
+
+match_rate <- mean(!is.na(suspicious$GEOID))
+cat(sprintf(
+  "%d / %d suspicious stops (%.1f%%) matched to a census tract\n",
+  sum(!is.na(suspicious$GEOID)), nrow(suspicious), 100 * match_rate
+))
+```
+
+## Load tract-level population by race
+
+The DC census tract ACS extract in `data/census_data/` reliably populates
+only two race columns — White (`DP05_0037E`) and Black (`DP05_0038E`); the
+Asian, "two or more races", and Hispanic/Latino columns are almost entirely
+zero (a gap in the source file itself), so this analysis is limited to a
+Black/White comparison, matching the convention already used in
+`explore/explore_acs_dc_data.R`.
+
+```{r load-tracts}
+tracts <- read.csv("data/census_data/ACS_5-Year_Demographic_Characteristics_DC_Census_Tract.csv",
+  colClasses = c(GEOID = "character")
+) %>%
+  transmute(
+    GEOID,
+    total_pop = DP05_0001E,
+    white_pop = DP05_0037E,
+    black_pop = DP05_0038E,
+    black_pct = black_pop / total_pop
+  )
+```
+
+## Citywide stop and arrest rates, adjusted for population by race
+
+This compares the race of the *person stopped* against DC's citywide Black
+and White population — it answers "relative to how many Black/White
+residents DC has, how often are Black/White people stopped or arrested in
+these suspicious stops?" It does not depend on the tract geocoding (every
+suspicious stop already has an `ETHNICITY` field), so it's unaffected by
+the geocoding match-rate limitation above.
+
+```{r citywide-rates}
+citywide_pop <- tracts %>% summarise(white_pop = sum(white_pop), black_pop = sum(black_pop))
+
+citywide_rates <- suspicious %>%
+  filter(ETHNICITY %in% c("Black", "White")) %>%
+  group_by(ETHNICITY) %>%
+  summarise(stops = n(), arrests = sum(OUTCOME == "Arrest"), .groups = "drop") %>%
+  mutate(
+    population = ifelse(ETHNICITY == "Black", citywide_pop$black_pop, citywide_pop$white_pop),
+    `Stop rate per 1,000 residents` = stops / population * 1000,
+    `Arrest rate per 1,000 residents` = arrests / population * 1000
+  )
+
+citywide_rates
+```
+
+```{r plot-citywide-rates}
+citywide_colors <- c("Black" = "#2a78d6", "White" = "#eb6834")
+
+citywide_long <- citywide_rates %>%
+  tidyr::pivot_longer(
+    cols = c(`Stop rate per 1,000 residents`, `Arrest rate per 1,000 residents`),
+    names_to = "metric", values_to = "rate"
+  ) %>%
+  mutate(metric = factor(metric, levels = c("Stop rate per 1,000 residents", "Arrest rate per 1,000 residents")))
+
+citywide_plot <- citywide_long %>%
+  ggplot(aes(x = metric, y = rate, fill = ETHNICITY)) +
+  geom_col(position = "dodge", width = 0.6) +
+  geom_text(aes(label = round(rate, 1)), position = position_dodge(width = 0.6), vjust = -0.4, size = 3.5) +
+  scale_fill_manual(values = citywide_colors, name = "Ethnicity") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(
+    title = "Suspicious Stop and Arrest Rates, Black vs. White Residents",
+    subtitle = "Per 1,000 DC residents of that race (ACS population denominator)",
+    x = NULL,
+    y = "Rate per 1,000 residents"
+  )
+
+citywide_plot
+ggsave("plots/demographics_citywide_rates.png", plot = citywide_plot, width = 8, height = 5.5)
+```
+
+## Tract-level stop intensity vs. neighborhood racial composition
+
+This is a different, complementary question: regardless of who is stopped,
+*where* do suspicious stops concentrate, and does that track a
+neighborhood's racial makeup? Each point is a census tract: the number of
+suspicious stops located in that tract (any ethnicity), divided by the
+tract's total population. Tracts with fewer than 100 residents are dropped
+(e.g. GEOID 11001980000 is a mostly-water, non-residential tract with only
+17 residents, whose tiny denominator turns a handful of stops into a
+meaningless 400+ per-1,000 "rate").
+
+```{r tract-summary}
+tract_summary <- suspicious %>%
+  filter(!is.na(GEOID)) %>%
+  group_by(GEOID) %>%
+  summarise(n_stops = n(), n_arrests = sum(OUTCOME == "Arrest"), .groups = "drop") %>%
+  inner_join(tracts, by = "GEOID") %>%
+  filter(total_pop >= 100) %>%
+  mutate(
+    stops_per_1k = n_stops / total_pop * 1000,
+    arrests_per_1k = n_arrests / total_pop * 1000
+  )
+
+cat(sprintf("%d of %d DC census tracts had at least one geocoded suspicious stop\n", nrow(tract_summary), nrow(tracts)))
+cat(sprintf(
+  "Correlation between tract %% Black population and stops per capita: %.2f\n",
+  cor(tract_summary$black_pct, tract_summary$stops_per_1k)
+))
+```
+
+```{r plot-tract-scatter}
+tract_scatter <- tract_summary %>%
+  ggplot(aes(x = black_pct, y = stops_per_1k)) +
+  geom_point(color = "#2a78d6", size = 2, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "#eb6834", se = TRUE, linewidth = 0.9) +
+  scale_x_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(plot.subtitle = element_text(size = 9)) +
+  labs(
+    title = "Suspicious Stops per Capita vs. Tract Black Population Share",
+    subtitle = stringr::str_wrap(
+      sprintf(
+        "Each point is one DC census tract; moderate positive correlation (r = %.2f, R-squared = %.2f)",
+        cor(tract_summary$black_pct, tract_summary$stops_per_1k),
+        summary(lm(stops_per_1k ~ black_pct, data = tract_summary))$r.squared
+      ),
+      width = 90
+    ),
+    x = "Tract population that is Black",
+    y = "Suspicious stops per 1,000 residents"
+  )
+
+tract_scatter
+ggsave("plots/demographics_tract_scatter.png", plot = tract_scatter, width = 8, height = 5.5)
+```
+
+Neighborhoods with a higher Black population share do see moderately more
+suspicious stops per capita (r of about 0.42), but that relationship alone
+only explains about 17% of the tract-to-tract variation (R-squared of
+about 0.17) -- there's substantial scatter, and plenty of majority-Black tracts sit at very low
+per-capita stop rates while a few low-Black-population tracts run high.
+That partial geographic relationship is far too small on its own to
+account for the citywide gap above, where Black residents are stopped at
+roughly `r round(citywide_rates$"Stop rate per 1,000 residents"[citywide_rates$ETHNICITY == "Black"] / citywide_rates$"Stop rate per 1,000 residents"[citywide_rates$ETHNICITY == "White"])`x
+the per-capita rate of White residents and arrested at roughly
+`r round(citywide_rates$"Arrest rate per 1,000 residents"[citywide_rates$ETHNICITY == "Black"] / citywide_rates$"Arrest rate per 1,000 residents"[citywide_rates$ETHNICITY == "White"])`x
+the rate. Put together, this suggests the disparity isn't
+mainly a story of "stops happen to be concentrated in heavily-Black
+neighborhoods" — it's that Black individuals are stopped and arrested at
+far higher rates relative to their population however you slice it,
+including within tracts that aren't especially Black.
+
+## Map: arrests per capita by tract
+
+```{r plot-tract-map}
+if (requireNamespace("sf", quietly = TRUE)) {
+  library(sf)
+  source("R/geo_viz_utils.R")
+
+  dc_tracts_geo <- read_census_tract_geo() %>%
+    mutate(GEOID = as.character(GEOID)) %>%
+    left_join(tract_summary %>% select(GEOID, arrests_per_1k), by = "GEOID")
+
+  tract_map <- ggplot(dc_tracts_geo) +
+    geom_sf(aes(fill = arrests_per_1k), color = "white", linewidth = 0.1) +
+    scale_fill_gradient(low = "#cde2fb", high = "#0d366b", na.value = "grey90", name = "Arrests\nper 1,000") +
+    theme_minimal() +
+    labs(title = "Suspicious-Stop Arrests per 1,000 Residents, by Census Tract")
+
+  tract_map
+  ggsave("plots/demographics_tract_map.png", plot = tract_map, width = 8, height = 6.5)
+} else {
+  message("Skipping tract map: the 'sf' package is not installed in this environment.")
+}
+```

@@ -16,6 +16,7 @@ knitr::opts_knit$set(root.dir = normalizePath(".."))
 library(dplyr)
 library(ggplot2)
 source("R/clean_stop_data.R")
+source("R/classify_stops.R")
 
 data <- clean_stop_data()
 ```
@@ -27,12 +28,7 @@ A stop is considered "suspicious" when `STOP_REASON_NONTICKET` includes
 multi-valued, comma-separated) reasons.
 
 ```{r flag-suspicious}
-suspicious <- data %>%
-  filter(grepl("Suspicion of criminal activity", STOP_REASON_NONTICKET)) %>%
-  mutate(
-    DATE = as.POSIXlt.character(DATETIME),
-    MONTH = format(DATE, "%Y-%m")
-  )
+suspicious <- flag_suspicious_stops(data)
 ```
 
 ## Classify each stop by outcome
@@ -42,16 +38,7 @@ an **Arrest** if `ARREST_CHARGES` is recorded, else a **Ticket** if
 `TICKET_COUNT` is a positive number, else **No Charge**.
 
 ```{r classify-outcome}
-suspicious <- suspicious %>%
-  mutate(
-    TICKET_COUNT_NUM = suppressWarnings(as.numeric(TICKET_COUNT)),
-    OUTCOME = case_when(
-      ARREST_CHARGES != "NULL" ~ "Arrest",
-      !is.na(TICKET_COUNT_NUM) & TICKET_COUNT_NUM > 0 ~ "Ticket",
-      TRUE ~ "No Charge"
-    ),
-    OUTCOME = factor(OUTCOME, levels = c("Arrest", "Ticket", "No Charge"))
-  )
+suspicious <- classify_outcome(suspicious)
 ```
 
 ## Count suspicious stops per month, by outcome

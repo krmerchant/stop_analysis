@@ -2,3 +2,6 @@ tags
 *.pdf
 plots/suspicious_stops_seasonality.png
 plots/suspicious_stops_arrest_charge_category.png
+plots/demographics_citywide_rates.png
+plots/demographics_tract_scatter.png
+plots/demographics_tract_map.png
