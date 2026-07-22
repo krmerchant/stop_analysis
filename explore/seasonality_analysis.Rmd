@@ -1,0 +1,191 @@
+---
+title: "Seasonality of Suspicious Stops"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+## Load data
+
+```{r load}
+library(dplyr)
+library(ggplot2)
+source("R/clean_stop_data.R")
+
+data <- clean_stop_data()
+```
+
+## Identify suspicious stops
+
+A stop is considered "suspicious" when `STOP_REASON_NONTICKET` includes
+"Suspicion of criminal activity (self-initiated)" among its (possibly
+multi-valued, comma-separated) reasons.
+
+```{r flag-suspicious}
+suspicious <- data %>%
+  filter(grepl("Suspicion of criminal activity", STOP_REASON_NONTICKET)) %>%
+  mutate(
+    DATE = as.POSIXlt.character(DATETIME),
+    MONTH = format(DATE, "%Y-%m")
+  )
+```
+
+## Classify each stop by outcome
+
+Each suspicious stop is assigned to exactly one outcome, in priority order:
+an **Arrest** if `ARREST_CHARGES` is recorded, else a **Ticket** if
+`TICKET_COUNT` is a positive number, else **No Charge**.
+
+```{r classify-outcome}
+suspicious <- suspicious %>%
+  mutate(
+    TICKET_COUNT_NUM = suppressWarnings(as.numeric(TICKET_COUNT)),
+    OUTCOME = case_when(
+      ARREST_CHARGES != "NULL" ~ "Arrest",
+      !is.na(TICKET_COUNT_NUM) & TICKET_COUNT_NUM > 0 ~ "Ticket",
+      TRUE ~ "No Charge"
+    ),
+    OUTCOME = factor(OUTCOME, levels = c("Arrest", "Ticket", "No Charge"))
+  )
+```
+
+## Count suspicious stops per month, by outcome
+
+```{r count-per-month}
+suspicious_per_month <- suspicious %>%
+  group_by(MONTH, OUTCOME) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(MONTH, OUTCOME)
+
+suspicious_per_month %>%
+  tidyr::pivot_wider(names_from = OUTCOME, values_from = count, values_fill = 0)
+```
+
+## Plot seasonality by outcome
+
+```{r plot-seasonality}
+outcome_colors <- c(
+  "Arrest"    = "#2a78d6",
+  "Ticket"    = "#eb6834",
+  "No Charge" = "#1baf7a"
+)
+
+seasonality_plot <- suspicious_per_month %>%
+  mutate(MONTH = as.Date(paste0(MONTH, "-01"))) %>%
+  ggplot(aes(x = MONTH, y = count, color = OUTCOME)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.8) +
+  scale_color_manual(values = outcome_colors, name = "Outcome") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title = "Suspicious Stops per Month, by Outcome",
+    subtitle = "STOP_REASON_NONTICKET includes 'Suspicion of criminal activity (self-initiated)'",
+    x = "Month",
+    y = "Number of Stops"
+  )
+
+seasonality_plot
+```
+
+```{r save-plot}
+ggsave("plots/suspicious_stops_seasonality.png", plot = seasonality_plot, width = 10, height = 5)
+```
+
+## Breakdown of arrests by charge category
+
+`ARREST_CHARGES_CATEGORY` can list multiple categories per arrest
+(comma-separated, e.g. `"Narcotics, Weapon Violations"` — 44% of arrests,
+1,470 of 3,351, list more than one). List order in this field is
+alphabetical, not severity or chronology, so taking a single "primary"
+category would arbitrarily favor categories earlier in the alphabet.
+Instead, each arrest is exploded into one row per category it lists, so an
+arrest charged with both Narcotics and Weapon Violations adds one count to
+*each*. Monthly category totals can therefore exceed the number of arrests
+that month. The top 7 categories by total count are kept individually (7 is
+the most the validated color palette supports alongside an "Other" series,
+8 total); the rest are folded into "Other" to keep the chart readable. With
+only the top 5 broken out, categories like Traffic Violations and Other
+Crimes (the 6th and 7th largest) were being absorbed into "Other" even
+though they're individually comparable in size to the categories shown, so
+"Other" swelled to dominate the chart; breaking those two out as their own
+series flattens "Other" back down to a genuine long tail.
+
+```{r classify-charge-category}
+# read.csv() (unlike readr) doesn't trim whitespace, so a raw split on "," would
+# leave a leading space on every list's first item (" Narcotics" vs "Narcotics"),
+# silently splitting each category's count across two distinct strings.
+arrests <- suspicious %>%
+  filter(OUTCOME == "Arrest") %>%
+  mutate(CHARGE_CATEGORY_LIST = lapply(strsplit(ARREST_CHARGES_CATEGORY, ","), trimws)) %>%
+  tidyr::unnest(CHARGE_CATEGORY_LIST)
+
+top_categories <- arrests %>%
+  count(CHARGE_CATEGORY_LIST, sort = TRUE) %>%
+  slice_head(n = 7) %>%
+  pull(CHARGE_CATEGORY_LIST)
+
+arrests <- arrests %>%
+  mutate(
+    CHARGE_CATEGORY = ifelse(CHARGE_CATEGORY_LIST %in% top_categories,
+      CHARGE_CATEGORY_LIST, "Other"
+    ),
+    CHARGE_CATEGORY = factor(CHARGE_CATEGORY, levels = c(top_categories, "Other"))
+  )
+```
+
+```{r count-charge-category-per-month}
+charge_category_per_month <- arrests %>%
+  group_by(MONTH, CHARGE_CATEGORY) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(MONTH, CHARGE_CATEGORY)
+
+charge_category_per_month %>%
+  tidyr::pivot_wider(names_from = CHARGE_CATEGORY, values_from = count, values_fill = 0)
+```
+
+```{r plot-charge-category}
+charge_category_colors <- setNames(
+  c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"),
+  c(top_categories, "Other")
+)
+
+charge_category_plot <- charge_category_per_month %>%
+  mutate(MONTH = as.Date(paste0(MONTH, "-01"))) %>%
+  ggplot(aes(x = MONTH, y = count, color = CHARGE_CATEGORY)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.8) +
+  scale_color_manual(values = charge_category_colors, name = "Charge Category") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    plot.subtitle = element_text(size = 9)
+  ) +
+  guides(color = guide_legend(nrow = 3)) +
+  labs(
+    title = "Arrests from Suspicious Stops per Month, by Charge Category",
+    subtitle = stringr::str_wrap(
+      "Top 7 categories from ARREST_CHARGES_CATEGORY; an arrest with multiple charges counts toward each of its categories, so monthly totals can exceed the arrest count; remainder folded into 'Other'",
+      width = 95
+    ),
+    x = "Month",
+    y = "Number of Arrests"
+  )
+
+charge_category_plot
+```
+
+```{r save-charge-category-plot}
+ggsave("plots/suspicious_stops_arrest_charge_category.png", plot = charge_category_plot, width = 10, height = 5.5)
+```
