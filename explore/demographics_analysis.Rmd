@@ -216,3 +216,78 @@ if (requireNamespace("sf", quietly = TRUE)) {
   message("Skipping tract map: the 'sf' package is not installed in this environment.")
 }
 ```
+
+## Black vs. White stop rate, per census tract
+
+Each dot is one census tract: its Black stop rate (Black suspicious stops
+in that tract, per 100 Black residents of that tract) against its White
+stop rate (same, per 100 White residents), with a dashed parity line
+(`y = x`). A dot above the line means Black residents of that tract were
+stopped at a higher per-capita rate than White residents of the same
+tract; dot size is the tract's total population. Tracts where the Black or
+White population is under 100 are dropped, since a handful of stops
+against a tiny population produces an unstable rate (the same issue as the
+near-empty tract excluded earlier). White suspicious stops are rare
+citywide (175 total), so many tracts sit at or near a 0% White rate — that
+sparsity is a real feature of the data, not a plotting artifact.
+
+```{r race-tract-rates}
+race_tract <- suspicious %>%
+  filter(!is.na(GEOID), ETHNICITY %in% c("Black", "White")) %>%
+  count(GEOID, ETHNICITY) %>%
+  tidyr::pivot_wider(names_from = ETHNICITY, values_from = n, values_fill = 0) %>%
+  inner_join(tracts, by = "GEOID") %>%
+  filter(white_pop >= 100, black_pop >= 100) %>%
+  mutate(
+    black_rate = Black / black_pop * 100,
+    white_rate = White / white_pop * 100,
+    above_parity = ifelse(black_rate > white_rate, "Black rate higher", "White rate at or above Black rate")
+  )
+
+cat(sprintf(
+  "%d tracts plotted; %d above the parity line (Black rate higher), %d at or below\n",
+  nrow(race_tract), sum(race_tract$above_parity == "Black rate higher"),
+  sum(race_tract$above_parity != "Black rate higher")
+))
+```
+
+```{r plot-race-tract-scatter}
+parity_colors <- c("Black rate higher" = "#2a78d6", "White rate at or above Black rate" = "#1baf7a")
+
+zoom_max <- 18
+off_chart <- race_tract %>% filter(black_rate > zoom_max | white_rate > zoom_max)
+
+race_scatter <- race_tract %>%
+  ggplot(aes(x = white_rate, y = black_rate)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(aes(size = total_pop, fill = above_parity), shape = 21, color = "white", alpha = 0.85) +
+  scale_fill_manual(values = parity_colors, name = NULL) +
+  scale_size_continuous(name = "Tract population", range = c(2, 10), labels = scales::comma) +
+  coord_equal(xlim = c(0, zoom_max), ylim = c(0, zoom_max)) +
+  theme_minimal() +
+  guides(fill = guide_legend(override.aes = list(size = 4), order = 1)) +
+  theme(legend.position = "right", plot.subtitle = element_text(size = 9)) +
+  labs(
+    title = "Suspicious Stops per 100 Residents, by Tract and Race",
+    subtitle = stringr::str_wrap(
+      sprintf(
+        "Each dot is a census tract, both axes on the same scale (1 unit = 1 unit); above the dashed line, Black residents were stopped at a higher rate. %d tracts with an even more extreme rate are off this chart, listed below.",
+        nrow(off_chart)
+      ),
+      width = 75
+    ),
+    x = "White stops per 100 White residents",
+    y = "Black stops per 100 Black residents"
+  )
+
+race_scatter
+ggsave("plots/demographics_race_tract_scatter.png", plot = race_scatter, width = 9, height = 6.5)
+```
+
+`r nrow(off_chart)` tracts have a Black or White stop rate above `r zoom_max` per 100 residents and are not shown on the chart above so the rest of the data stays readable:
+
+```{r off-chart-table}
+off_chart %>%
+  transmute(GEOID, black_rate = round(black_rate, 1), white_rate = round(white_rate, 1), total_pop) %>%
+  arrange(desc(black_rate))
+```

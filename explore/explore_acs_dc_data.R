@@ -14,9 +14,10 @@ tract_geo <- st_read("data/census_data/ACS_5-Year_Demographic_Characteristics_of
 tract_geo <- tract_geo %>% mutate(black_proportion = DP05_0038E / DP05_0001E, white_proportion = DP05_0037E / DP05_0001E)
 
 
+
 dev.new()
-ggplot(tract_geo) +
-  geom_sf(aes(fill = white_proportion)) +
+ ggplot(tract_geo) +
+ geom_sf(aes(fill = white_proportion)) +
   scale_fill_gradient(low = "lightyellow", high = "darkred") +
   theme_minimal() +
   labs(title = "DC POP - White Proportion")
