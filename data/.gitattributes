@@ -1,3 +1,4 @@
 police_districts.geojson filter=lfs diff=lfs merge=lfs -text
 Ward_-_2022.geojson filter=lfs diff=lfs merge=lfs -text
 ACS_5-Year_Demographic_Characteristics_DC_Census_Tract.csv filter=lfs diff=lfs merge=lfs -text
+Closed_Circuit_TV_Street_Cameras.csv filter=lfs diff=lfs merge=lfs -text
